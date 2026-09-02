@@ -114,6 +114,8 @@ pub mod execution;
 pub mod runner;
 pub mod socket;
 pub mod task;
+#[cfg(feature = "node")]
+pub mod tenant;
 
 #[cfg(feature = "fuzz")]
 #[doc(hidden)]

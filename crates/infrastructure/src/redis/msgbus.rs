@@ -49,20 +49,23 @@ use nautilus_common::{
         BusMessage, BusPayloadType, MessageBusBacking, MessageBusBackingFactory, MessageBusConfig,
         switchboard::CLOSE_TOPIC,
     },
+    tenant::{TenantId, TenantNamespace},
 };
 use nautilus_core::{
     UUID4,
     time::{duration_since_unix_epoch, get_atomic_clock_realtime},
 };
 use nautilus_cryptography::providers::install_cryptographic_provider;
-use nautilus_model::identifiers::TraderId;
+use nautilus_model::identifiers::{AccountId, TraderId};
 use redis::{AsyncCommands, RetryMethod, aio::ConnectionManager, streams};
 use serde::{Deserialize, Serialize};
 use streams::StreamReadOptions;
 use ustr::Ustr;
 
 use super::{REDIS_MINID, REDIS_XTRIM, await_handle};
-use crate::redis::{RedisConnectionConfig, create_redis_connection, get_stream_key};
+use crate::redis::{
+    RedisConnectionConfig, create_redis_connection, get_stream_key, get_stream_key_for_namespace,
+};
 
 const MSGBUS_PUBLISH: &str = "msgbus-publish";
 const MSGBUS_STREAM: &str = "msgbus-stream";
@@ -93,6 +96,10 @@ type RedisStreamBulk = Vec<HashMap<String, Vec<HashMap<String, redis::Value>>>>;
     pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.infrastructure")
 )]
 pub struct RedisMessageBusConfig {
+    /// Optional tenant namespace used for Redis stream keys.
+    pub tenant_id: Option<String>,
+    /// Broker account used with `tenant_id` to form the Redis namespace.
+    pub account_id: Option<String>,
     /// The Redis host address. If `None`, `127.0.0.1` is used.
     pub host: Option<String>,
     /// The Redis port. If `None`, `6379` is used.
@@ -121,6 +128,8 @@ impl Debug for RedisMessageBusConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let redacted = self.password.as_ref().map(|_| "***");
         f.debug_struct(stringify!(RedisMessageBusConfig))
+            .field("tenant_id", &self.tenant_id)
+            .field("account_id", &self.account_id)
             .field("host", &self.host)
             .field("port", &self.port)
             .field("username", &self.username)
@@ -139,6 +148,8 @@ impl Debug for RedisMessageBusConfig {
 impl Default for RedisMessageBusConfig {
     fn default() -> Self {
         Self {
+            tenant_id: None,
+            account_id: None,
             host: None,
             port: None,
             username: None,
@@ -439,8 +450,21 @@ pub async fn publish_messages(
 ) -> anyhow::Result<()> {
     log_task_started(MSGBUS_PUBLISH);
 
+    let stream_key = match backing.tenant_id.as_deref() {
+        Some(tenant_id) => {
+            let tenant_id = TenantId::new(tenant_id)?;
+            let account_id = backing
+                .account_id
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("account_id is required with tenant_id"))?;
+            let account_id = AccountId::new_checked(account_id)
+                .map_err(|e| anyhow::anyhow!("invalid account_id: {e}"))?;
+            let namespace = TenantNamespace::new(tenant_id, account_id, instance_id);
+            get_stream_key_for_namespace(&namespace, trader_id, &config)
+        }
+        None => get_stream_key(trader_id, instance_id, &config),
+    };
     let mut con = create_redis_connection(MSGBUS_PUBLISH, &backing).await?;
-    let stream_key = get_stream_key(trader_id, instance_id, &config);
 
     // Auto-trimming
     let autotrim_duration = config

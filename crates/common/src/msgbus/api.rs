@@ -1650,6 +1650,7 @@ mod tests {
         msgbus::{
             BusMessage, BusTap, MessageBusConfig, MessageBusExternalEgress, SuppressExternalGuard,
             clear_bus_tap, set_bus_tap, set_message_bus, stubs::get_call_check_handler,
+            with_message_bus,
         },
     };
 
@@ -1726,6 +1727,41 @@ mod tests {
     fn reset_message_bus() {
         get_message_bus().borrow_mut().dispose();
         set_message_bus(Rc::new(RefCell::new(MessageBus::default())));
+    }
+
+    #[rstest]
+    fn test_message_bus_scope_isolates_owned_buses() {
+        let bus_a = Rc::new(RefCell::new(MessageBus::default()));
+        let bus_b = Rc::new(RefCell::new(MessageBus::default()));
+        let received_a = Rc::new(Cell::new(0));
+        let received_b = Rc::new(Cell::new(0));
+
+        let handler_a = ShareableMessageHandler::from_typed({
+            let received_a = received_a.clone();
+            move |_: &u64| received_a.set(received_a.get() + 1)
+        });
+        let handler_b = ShareableMessageHandler::from_typed({
+            let received_b = received_b.clone();
+            move |_: &u64| received_b.set(received_b.get() + 1)
+        });
+
+        with_message_bus(bus_a.clone(), || {
+            subscribe_any("tenant.events".into(), handler_a, None);
+        });
+        with_message_bus(bus_b.clone(), || {
+            subscribe_any("tenant.events".into(), handler_b, None);
+        });
+        with_message_bus(bus_a.clone(), || {
+            publish_any("tenant.events".into(), &1_u64)
+        });
+        with_message_bus(bus_b.clone(), || {
+            publish_any("tenant.events".into(), &1_u64)
+        });
+
+        assert_eq!(received_a.get(), 1);
+        assert_eq!(received_b.get(), 1);
+        assert_eq!(bus_a.borrow().pub_count(), 1);
+        assert_eq!(bus_b.borrow().pub_count(), 1);
     }
 
     fn assert_response_handler_is_consumed<T>(response: &DataResponse)

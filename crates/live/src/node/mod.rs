@@ -98,7 +98,7 @@ use nautilus_common::{
         },
         system::{QueueStateChanged, ReconnectSocket, SocketStateChange, SocketStateChanged},
     },
-    msgbus::{self, BusMessage, MessagingSwitchboard},
+    msgbus::{self, BusMessage, MessageBusScope, MessagingSwitchboard},
     runner::{SystemChannel, TimeEventMessage, TradingCommandMessage},
 };
 use nautilus_core::{
@@ -350,6 +350,9 @@ impl LiveNode {
     ///
     /// Returns an error if startup fails.
     pub async fn start(&mut self) -> anyhow::Result<()> {
+        let _msgbus_scope = MessageBusScope::enter(self.kernel.message_bus());
+        let _runner_scope = self.runner.as_ref().map(AsyncRunner::enter_scope);
+
         if self.state().is_running() {
             anyhow::bail!("Already running");
         }
@@ -483,6 +486,9 @@ impl LiveNode {
     ///
     /// Returns an error if shutdown fails.
     pub async fn stop(&mut self) -> anyhow::Result<()> {
+        let _msgbus_scope = MessageBusScope::enter(self.kernel.message_bus());
+        let _runner_scope = self.runner.as_ref().map(AsyncRunner::enter_scope);
+
         if !self.state().is_running() {
             anyhow::bail!("Not running");
         }
@@ -522,6 +528,9 @@ impl LiveNode {
 
     /// Disposes the live node kernel and releases resources.
     pub fn dispose(&mut self) {
+        let _msgbus_scope = MessageBusScope::enter(self.kernel.message_bus());
+        let _runner_scope = self.runner.as_ref().map(AsyncRunner::enter_scope);
+
         self.close_external_ingress();
         self.kernel.dispose();
         self.handle.set_stopped();
@@ -975,6 +984,9 @@ impl LiveNode {
     ///
     /// Returns an error if the node fails to start or encounters a runtime error.
     pub async fn run_with_mode(&mut self, mode: NodeRunMode) -> anyhow::Result<()> {
+        let _msgbus_scope = MessageBusScope::enter(self.kernel.message_bus());
+        let _runner_scope = self.runner.as_ref().map(AsyncRunner::enter_scope);
+
         if self.state().is_running() {
             anyhow::bail!("Already running");
         }
@@ -2579,6 +2591,9 @@ impl LiveNode {
     where
         T: DataActor + DataActorNative + Component + Actor + 'static,
     {
+        let _msgbus_scope = MessageBusScope::enter(self.kernel.message_bus());
+        let _runner_scope = self.runner.as_ref().map(AsyncRunner::enter_scope);
+
         if self.state() != NodeState::Idle {
             anyhow::bail!(
                 "Cannot add actor while node is running, add actors before running the node"
@@ -2604,6 +2619,9 @@ impl LiveNode {
         F: FnOnce() -> anyhow::Result<T>,
         T: DataActor + DataActorNative + Component + Actor + 'static,
     {
+        let _msgbus_scope = MessageBusScope::enter(self.kernel.message_bus());
+        let _runner_scope = self.runner.as_ref().map(AsyncRunner::enter_scope);
+
         if self.state() != NodeState::Idle {
             anyhow::bail!(
                 "Cannot add actor while node is running, add actors before running the node"
@@ -2635,6 +2653,9 @@ impl LiveNode {
     where
         T: Strategy + StrategyNative + DataActorNative + Component + Debug + 'static,
     {
+        let _msgbus_scope = MessageBusScope::enter(self.kernel.message_bus());
+        let _runner_scope = self.runner.as_ref().map(AsyncRunner::enter_scope);
+
         if self.state() != NodeState::Idle {
             anyhow::bail!(
                 "Cannot add strategy while node is running, add strategies before running the node"
@@ -2702,6 +2723,9 @@ impl LiveNode {
         strategy_id: StrategyId,
         claims: &[InstrumentId],
     ) -> anyhow::Result<()> {
+        let _msgbus_scope = MessageBusScope::enter(self.kernel.message_bus());
+        let _runner_scope = self.runner.as_ref().map(AsyncRunner::enter_scope);
+
         let mut exec_engine = self
             .kernel
             .exec_engine
@@ -2769,6 +2793,9 @@ impl LiveNode {
         &mut self,
         strategy_id: StrategyId,
     ) -> anyhow::Result<()> {
+        let _msgbus_scope = MessageBusScope::enter(self.kernel.message_bus());
+        let _runner_scope = self.runner.as_ref().map(AsyncRunner::enter_scope);
+
         let mut exec_engine = self
             .kernel
             .exec_engine
@@ -2806,6 +2833,9 @@ impl LiveNode {
     where
         T: ExecutionAlgorithm + ExecutionAlgorithmNative + Component + Debug + 'static,
     {
+        let _msgbus_scope = MessageBusScope::enter(self.kernel.message_bus());
+        let _runner_scope = self.runner.as_ref().map(AsyncRunner::enter_scope);
+
         if self.state() != NodeState::Idle {
             anyhow::bail!(
                 "Cannot add exec algorithm while node is running, add exec algorithms before running the node"

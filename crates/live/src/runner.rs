@@ -64,7 +64,8 @@ use std::{fmt::Debug, sync::Arc};
 use nautilus_common::{
     live::runner::{
         replace_data_event_sender, replace_exec_event_sender, replace_system_command_sender,
-        replace_system_event_sender,
+        replace_system_event_sender, restore_data_event_sender, restore_exec_event_sender,
+        restore_system_command_sender, restore_system_event_sender,
     },
     messages::{
         DataEvent, ExecutionEvent, ExecutionReport, SystemCommand, SystemEvent, data::DataCommand,
@@ -74,7 +75,8 @@ use nautilus_common::{
     runner::{
         DataCommandSender, TimeEventMessage, TimeEventSender, TradingCommandMessage,
         TradingCommandSender, replace_data_cmd_sender, replace_exec_cmd_sender,
-        replace_time_event_sender,
+        replace_time_event_sender, restore_data_cmd_sender, restore_exec_cmd_sender,
+        restore_time_event_sender,
     },
 };
 use nautilus_model::events::OrderEventAny;
@@ -189,6 +191,42 @@ pub struct AsyncRunner {
     data_cmd_tx: tokio::sync::mpsc::UnboundedSender<DataCommand>,
 }
 
+/// Restores the thread-local runner bindings when dropped.
+///
+/// The underlying channels are owned by an [`AsyncRunner`], while this guard only controls which
+/// runner is active for legacy APIs that resolve their sender through thread-local storage. This
+/// makes nested tenant operations safe: returning from one tenant restores the previous tenant's
+/// bindings instead of leaving the last runner globally selected.
+#[must_use]
+pub struct RunnerScope {
+    time_event: Option<Arc<dyn TimeEventSender>>,
+    data_command: Option<Arc<dyn DataCommandSender>>,
+    trading_command: Option<Arc<dyn TradingCommandSender>>,
+    data_event: Option<tokio::sync::mpsc::UnboundedSender<DataEvent>>,
+    exec_event: Option<tokio::sync::mpsc::UnboundedSender<ExecutionEvent>>,
+    system_event: Option<tokio::sync::mpsc::UnboundedSender<SystemEvent>>,
+    system_command: Option<tokio::sync::mpsc::UnboundedSender<SystemCommand>>,
+}
+
+impl Debug for RunnerScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(stringify!(RunnerScope))
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for RunnerScope {
+    fn drop(&mut self) {
+        restore_time_event_sender(self.time_event.take());
+        restore_data_cmd_sender(self.data_command.take());
+        restore_exec_cmd_sender(self.trading_command.take());
+        restore_data_event_sender(self.data_event.take());
+        restore_exec_event_sender(self.exec_event.take());
+        restore_system_event_sender(self.system_event.take());
+        restore_system_command_sender(self.system_command.take());
+    }
+}
+
 /// Handle for stopping the `AsyncRunner` from another context.
 #[derive(Clone, Debug)]
 pub struct AsyncRunnerHandle {
@@ -276,6 +314,21 @@ impl AsyncRunner {
         replace_data_cmd_sender(Arc::new(AsyncDataCommandSender::new(
             self.data_cmd_tx.clone(),
         )));
+    }
+
+    /// Activates this runner for the current thread until the returned guard is dropped.
+    pub fn enter_scope(&self) -> RunnerScope {
+        let scope = RunnerScope {
+            time_event: nautilus_common::runner::try_get_time_event_sender(),
+            data_command: nautilus_common::runner::try_get_data_cmd_sender(),
+            trading_command: nautilus_common::runner::try_get_trading_cmd_sender(),
+            data_event: nautilus_common::live::runner::try_get_data_event_sender(),
+            exec_event: nautilus_common::live::runner::try_get_exec_event_sender(),
+            system_event: nautilus_common::live::runner::try_get_system_event_sender(),
+            system_command: nautilus_common::live::runner::try_get_system_command_sender(),
+        };
+        self.bind_senders();
+        scope
     }
 
     /// Stops the runner with an internal shutdown signal.
@@ -2022,6 +2075,31 @@ mod tests {
 
             assert!(runner2.channels.data_cmd_rx.try_recv().is_ok());
             assert!(runner1.channels.data_cmd_rx.try_recv().is_err());
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[rstest]
+    fn test_runner_scope_restores_previous_bindings() {
+        std::thread::spawn(|| {
+            let mut runner1 = AsyncRunner::new();
+            runner1.bind_senders();
+            let mut runner2 = AsyncRunner::new();
+
+            {
+                let _scope = runner2.enter_scope();
+                get_data_event_sender()
+                    .send(DataEvent::Data(Data::Quote(test_quote())))
+                    .unwrap();
+                assert!(runner2.channels.data_evt_rx.try_recv().is_ok());
+            }
+
+            get_data_event_sender()
+                .send(DataEvent::Data(Data::Quote(test_quote())))
+                .unwrap();
+            assert!(runner1.channels.data_evt_rx.try_recv().is_ok());
+            assert!(runner2.channels.data_evt_rx.try_recv().is_err());
         })
         .join()
         .unwrap();

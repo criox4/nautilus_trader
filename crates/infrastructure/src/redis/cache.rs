@@ -54,6 +54,7 @@ use nautilus_common::{
     live::get_runtime,
     logging::{log_task_awaiting, log_task_started, log_task_stopped},
     signal::Signal,
+    tenant::{TenantId, TenantNamespace, encode_namespace_component},
 };
 use nautilus_core::{UUID4, UnixNanos, correctness::check_slice_not_empty};
 use nautilus_cryptography::providers::install_cryptographic_provider;
@@ -138,6 +139,10 @@ const INDEX_POSITIONS_CLOSED: &str = "index:positions_closed";
     pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.infrastructure")
 )]
 pub struct RedisCacheConfig {
+    /// Optional tenant namespace used for Redis cache keys.
+    pub tenant_id: Option<String>,
+    /// Broker account used with `tenant_id` to form the Redis namespace.
+    pub account_id: Option<String>,
     /// The Redis host address. If `None`, `127.0.0.1` is used.
     pub host: Option<String>,
     /// The Redis port. If `None`, `6379` is used.
@@ -166,6 +171,8 @@ impl Debug for RedisCacheConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let redacted = self.password.as_ref().map(|_| "***");
         f.debug_struct(stringify!(RedisCacheConfig))
+            .field("tenant_id", &self.tenant_id)
+            .field("account_id", &self.account_id)
             .field("host", &self.host)
             .field("port", &self.port)
             .field("username", &self.username)
@@ -184,6 +191,8 @@ impl Debug for RedisCacheConfig {
 impl Default for RedisCacheConfig {
     fn default() -> Self {
         Self {
+            tenant_id: None,
+            account_id: None,
             host: None,
             port: None,
             username: None,
@@ -330,10 +339,22 @@ impl RedisCacheDatabase {
     ) -> anyhow::Result<Self> {
         install_cryptographic_provider();
 
-        let con = create_redis_connection(CACHE_READ, &database).await?;
-
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<DatabaseCommand>();
-        let trader_key = get_trader_key(trader_id, instance_id, &config);
+        let trader_key = match database.tenant_id.as_deref() {
+            Some(tenant_id) => {
+                let tenant_id = TenantId::new(tenant_id)?;
+                let account_id = database
+                    .account_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("account_id is required with tenant_id"))?;
+                let account_id = AccountId::new_checked(account_id)
+                    .map_err(|e| anyhow::anyhow!("invalid account_id: {e}"))?;
+                let namespace = TenantNamespace::new(tenant_id, account_id, instance_id);
+                get_trader_key_for_namespace(&namespace, trader_id, &config)
+            }
+            None => get_trader_key(trader_id, instance_id, &config),
+        };
+        let con = create_redis_connection(CACHE_READ, &database).await?;
         let trader_key_clone = trader_key.clone();
         let encoding = config.encoding;
         let bulk_read_batch_size = config.bulk_read_batch_size;
@@ -1206,6 +1227,20 @@ fn get_trader_key(trader_id: TraderId, instance_id: UUID4, config: &CacheConfig)
     key
 }
 
+fn get_trader_key_for_namespace(
+    namespace: &TenantNamespace,
+    trader_id: TraderId,
+    config: &CacheConfig,
+) -> String {
+    let mut key = namespace.key_prefix();
+    key.push(':');
+    if config.use_trader_prefix {
+        key.push_str("trader-");
+    }
+    key.push_str(&encode_namespace_component(trader_id.as_str()));
+    key
+}
+
 fn get_collection_key(key: &str) -> anyhow::Result<&str> {
     key.split_once(REDIS_DELIMITER)
         .map(|(collection, _)| collection)
@@ -1928,6 +1963,21 @@ mod tests {
         let key = get_trader_key(trader_id, instance_id, &config);
         assert!(key.starts_with("trader-tester-123:"));
         assert!(key.ends_with(&instance_id.to_string()));
+    }
+
+    #[rstest]
+    fn test_get_trader_key_with_tenant_namespace() {
+        let tenant_id = TenantId::new("tenant-a").unwrap();
+        let trader_id = TraderId::from("tester-123");
+        let account_id = AccountId::from("BINANCE-001");
+        let instance_id = UUID4::new();
+        let config = CacheConfig::default();
+
+        let namespace = TenantNamespace::new(tenant_id, account_id, instance_id);
+        let key = get_trader_key_for_namespace(&namespace, trader_id, &config);
+
+        assert!(key.starts_with("nautilus:v1:tenant:tenant-a:account:BINANCE-001:runtime:"));
+        assert!(key.ends_with(":trader-tester-123"));
     }
 
     #[rstest]

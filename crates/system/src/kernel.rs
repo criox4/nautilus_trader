@@ -59,7 +59,7 @@ use nautilus_common::{
     },
     messages::system::ShutdownSystem,
     msgbus::{
-        self, MessageBus, MessagingSwitchboard, ShareableMessageHandler, get_message_bus,
+        self, MessageBus, MessageBusScope, MessagingSwitchboard, ShareableMessageHandler,
         set_message_bus,
     },
 };
@@ -98,6 +98,8 @@ pub struct NautilusKernel {
     pub machine_id: String,
     /// The kernel configuration.
     pub config: Box<dyn NautilusKernelConfig>,
+    /// The message bus owned by this kernel.
+    pub message_bus: Rc<RefCell<MessageBus>>,
     /// The shared in-memory cache.
     pub cache: Rc<RefCell<Cache>>,
     /// The clock driving the kernel.
@@ -138,6 +140,7 @@ impl Debug for NautilusKernel {
             .field("name", &self.name)
             .field("instance_id", &self.instance_id)
             .field("machine_id", &self.machine_id)
+            .field("message_bus", &self.message_bus)
             .field("environment", &self.config.environment())
             .finish_non_exhaustive()
     }
@@ -302,12 +305,12 @@ impl NautilusKernel {
             Some(name.clone()),
             None,
         )));
-        set_message_bus(msgbus);
+        set_message_bus(msgbus.clone());
 
         if let Some(config) = config.msgbus()
             && let Some(filter) = config.types_filter
         {
-            get_message_bus().borrow_mut().set_types_filter(filter);
+            msgbus.borrow_mut().set_types_filter(filter);
         }
 
         let portfolio = Rc::new(RefCell::new(Portfolio::new(
@@ -420,6 +423,7 @@ impl NautilusKernel {
             machine_id,
             event_store,
             config: Box::new(config),
+            message_bus: msgbus,
             cache,
             clock,
             portfolio,
@@ -647,6 +651,12 @@ impl NautilusKernel {
         self.cache.clone()
     }
 
+    /// Returns the message bus owned by this kernel.
+    #[must_use]
+    pub fn message_bus(&self) -> Rc<RefCell<MessageBus>> {
+        self.message_bus.clone()
+    }
+
     /// Returns the kernel's portfolio.
     #[must_use]
     pub fn portfolio(&self) -> Ref<'_, Portfolio> {
@@ -679,6 +689,8 @@ impl NautilusKernel {
 
     /// Starts the Nautilus system kernel synchronously (for backtest use).
     pub fn start(&mut self) {
+        let _msgbus_scope = MessageBusScope::enter(self.message_bus.clone());
+
         arm_shutdown_on_error(self.config.shutdown_on_error());
         log::info!("Starting");
 
@@ -768,6 +780,7 @@ impl NautilusKernel {
         reason = "keeps the public async kernel API shape stable"
     )]
     pub async fn start_async(&mut self) {
+        let _msgbus_scope = MessageBusScope::enter(self.message_bus.clone());
         self.start();
     }
 
@@ -780,6 +793,8 @@ impl NautilusKernel {
     /// Returns an error if the trader or a registered component fails to start. A failed partial
     /// start is stopped immediately before the error is returned.
     pub fn start_trader(&mut self) -> anyhow::Result<()> {
+        let _msgbus_scope = MessageBusScope::enter(self.message_bus.clone());
+
         log::info!("Starting trader...");
 
         let load_state = self.config.load_state();
@@ -825,6 +840,8 @@ impl NautilusKernel {
     /// which may trigger residual events such as order cancellations. The caller should
     /// continue processing events after calling this method to handle these residual events.
     pub fn stop_trader(&mut self) {
+        let _msgbus_scope = MessageBusScope::enter(self.message_bus.clone());
+
         disarm_shutdown_on_error();
 
         if !self.trader.borrow().is_running() {
@@ -844,6 +861,8 @@ impl NautilusKernel {
     ///
     /// Returns an error if any active trader component cannot be stopped.
     pub fn stop_trader_after_start_failure(&mut self) -> anyhow::Result<()> {
+        let _msgbus_scope = MessageBusScope::enter(self.message_bus.clone());
+
         disarm_shutdown_on_error();
 
         if !matches!(
@@ -872,6 +891,8 @@ impl NautilusKernel {
         reason = "keeps the public async kernel API shape stable"
     )]
     pub async fn finalize_stop(&mut self) -> anyhow::Result<()> {
+        let _msgbus_scope = MessageBusScope::enter(self.message_bus.clone());
+
         disarm_shutdown_on_error();
 
         // Execution and data clients are stopped by their engines via `stop_engines` below
@@ -932,6 +953,8 @@ impl NautilusKernel {
 
     /// Resets the Nautilus system kernel to its initial state.
     pub fn reset(&mut self) {
+        let _msgbus_scope = MessageBusScope::enter(self.message_bus.clone());
+
         disarm_shutdown_on_error();
         log::info!("Resetting");
 
@@ -954,6 +977,8 @@ impl NautilusKernel {
 
     /// Disposes of the Nautilus system kernel, releasing resources.
     pub fn dispose(&mut self) {
+        let _msgbus_scope = MessageBusScope::enter(self.message_bus.clone());
+
         disarm_shutdown_on_error();
         log::info!("Disposing");
 
@@ -1020,7 +1045,7 @@ impl NautilusKernel {
         self.risk_engine.borrow_mut().dispose();
         self.order_emulator.dispose();
         self.cache.borrow_mut().dispose();
-        get_message_bus().borrow_mut().dispose();
+        self.message_bus.borrow_mut().dispose();
 
         log::info!("Disposed");
     }
@@ -1061,6 +1086,8 @@ impl NautilusKernel {
     /// and can be drained into the cache before execution clients connect.
     #[expect(clippy::await_holding_refcell_ref)] // Single-threaded runtime, intentional design
     pub async fn connect_data_clients(&mut self) {
+        let _msgbus_scope = MessageBusScope::enter(self.message_bus.clone());
+
         log::info!("Connecting data clients...");
         self.data_engine.borrow_mut().connect().await;
     }
@@ -1071,6 +1098,8 @@ impl NautilusKernel {
     /// have been drained into the cache, so execution clients can load instruments.
     #[expect(clippy::await_holding_refcell_ref)] // Single-threaded runtime, intentional design
     pub async fn connect_exec_clients(&mut self) {
+        let _msgbus_scope = MessageBusScope::enter(self.message_bus.clone());
+
         log::info!("Connecting execution clients...");
         self.exec_engine.borrow_mut().connect().await;
     }
@@ -1082,6 +1111,8 @@ impl NautilusKernel {
     /// Returns an error if any client fails to disconnect.
     #[expect(clippy::await_holding_refcell_ref)] // Single-threaded runtime, intentional design
     pub async fn disconnect_clients(&mut self) -> anyhow::Result<()> {
+        let _msgbus_scope = MessageBusScope::enter(self.message_bus.clone());
+
         log::info!("Disconnecting clients...");
         let mut data_engine = self.data_engine.borrow_mut();
         let mut exec_engine = self.exec_engine.borrow_mut();

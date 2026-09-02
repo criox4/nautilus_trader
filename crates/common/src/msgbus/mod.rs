@@ -24,8 +24,9 @@
 //!
 //! # Architecture
 //!
-//! The bus uses thread-local storage for single-threaded async runtimes. Each
-//! thread gets its own `MessageBus` instance, avoiding synchronization overhead.
+//! Each runtime owns its `MessageBus` instance. Legacy free functions resolve the bus active on
+//! the current thread; multi-runtime hosts use [`MessageBusScope`] to activate one owned bus for
+//! each dispatch turn without sharing subscriptions or endpoints.
 //!
 //! Two routing mechanisms serve different needs:
 //!
@@ -200,6 +201,49 @@ pub fn set_message_bus(msgbus: Rc<RefCell<MessageBus>>) {
     HAS_EXTERNAL_EGRESS.with(|flag| flag.set(msgbus.borrow().has_external_egress()));
     MESSAGE_BUS.with(|bus| {
         *bus.borrow_mut() = Some(msgbus);
+    });
+}
+
+/// Temporarily makes `msgbus` the current bus for legacy global message-bus APIs.
+///
+/// The guard makes the existing thread-local API safe to use while a host dispatches one tenant
+/// at a time. It restores the previous bus when dropped, including when the enclosed operation
+/// returns early or unwinds.
+#[derive(Debug)]
+pub struct MessageBusScope {
+    previous: Option<Rc<RefCell<MessageBus>>>,
+}
+
+impl MessageBusScope {
+    /// Activates a tenant-owned message bus for the current thread.
+    #[must_use]
+    pub fn enter(msgbus: Rc<RefCell<MessageBus>>) -> Self {
+        let previous = try_get_message_bus();
+        set_message_bus(msgbus);
+        Self { previous }
+    }
+}
+
+impl Drop for MessageBusScope {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(msgbus) => set_message_bus(msgbus),
+            None => clear_message_bus(),
+        }
+    }
+}
+
+/// Runs a closure with a tenant-owned message bus active.
+pub fn with_message_bus<T>(msgbus: Rc<RefCell<MessageBus>>, f: impl FnOnce() -> T) -> T {
+    let _scope = MessageBusScope::enter(msgbus);
+    f()
+}
+
+/// Clears the current thread's message bus.
+pub fn clear_message_bus() {
+    HAS_EXTERNAL_EGRESS.with(|flag| flag.set(false));
+    MESSAGE_BUS.with(|bus| {
+        *bus.borrow_mut() = None;
     });
 }
 

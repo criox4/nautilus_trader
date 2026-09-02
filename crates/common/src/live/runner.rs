@@ -68,6 +68,11 @@ pub fn replace_data_event_sender(sender: tokio::sync::mpsc::UnboundedSender<Data
     });
 }
 
+/// Restores the data event sender that was active before a scoped runner binding.
+pub fn restore_data_event_sender(sender: Option<tokio::sync::mpsc::UnboundedSender<DataEvent>>) {
+    DATA_EVENT_SENDER.with(|s| *s.borrow_mut() = sender);
+}
+
 /// Gets the global system event sender.
 ///
 /// # Panics
@@ -112,6 +117,13 @@ pub fn replace_system_event_sender(sender: tokio::sync::mpsc::UnboundedSender<Sy
     SYSTEM_EVENT_SENDER.with(|s| {
         *s.borrow_mut() = Some(sender);
     });
+}
+
+/// Restores the system event sender that was active before a scoped runner binding.
+pub fn restore_system_event_sender(
+    sender: Option<tokio::sync::mpsc::UnboundedSender<SystemEvent>>,
+) {
+    SYSTEM_EVENT_SENDER.with(|s| *s.borrow_mut() = sender);
 }
 
 /// Gets the global system command sender.
@@ -161,6 +173,13 @@ pub fn replace_system_command_sender(sender: tokio::sync::mpsc::UnboundedSender<
     });
 }
 
+/// Restores the system command sender that was active before a scoped runner binding.
+pub fn restore_system_command_sender(
+    sender: Option<tokio::sync::mpsc::UnboundedSender<SystemCommand>>,
+) {
+    SYSTEM_COMMAND_SENDER.with(|s| *s.borrow_mut() = sender);
+}
+
 /// Gets the global execution event sender.
 ///
 /// # Panics
@@ -208,6 +227,13 @@ pub fn replace_exec_event_sender(sender: tokio::sync::mpsc::UnboundedSender<Exec
     EXEC_EVENT_SENDER.with(|s| {
         *s.borrow_mut() = Some(sender);
     });
+}
+
+/// Restores the execution event sender that was active before a scoped runner binding.
+pub fn restore_exec_event_sender(
+    sender: Option<tokio::sync::mpsc::UnboundedSender<ExecutionEvent>>,
+) {
+    EXEC_EVENT_SENDER.with(|s| *s.borrow_mut() = sender);
 }
 
 thread_local! {

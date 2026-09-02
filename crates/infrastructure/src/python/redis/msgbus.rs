@@ -57,6 +57,8 @@ impl RedisMessageBusConfig {
     ) -> Self {
         let default = Self::default();
         Self {
+            tenant_id: None,
+            account_id: None,
             host,
             port,
             username,

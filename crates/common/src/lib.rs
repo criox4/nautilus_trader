@@ -141,6 +141,7 @@ pub mod msgbus;
 pub mod providers;
 pub mod runner;
 pub mod signal;
+pub mod tenant;
 pub mod testing;
 pub mod throttler;
 pub mod timer;

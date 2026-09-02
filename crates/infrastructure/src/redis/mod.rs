@@ -21,7 +21,11 @@ pub mod queries;
 
 use std::{fmt::Write as _, time::Duration};
 
-use nautilus_common::{logging::log_task_awaiting, msgbus::MessageBusConfig};
+use nautilus_common::{
+    logging::log_task_awaiting,
+    msgbus::MessageBusConfig,
+    tenant::{TenantNamespace, encode_namespace_component},
+};
 use nautilus_core::{UUID4, string::semver::SemVer};
 use nautilus_model::identifiers::TraderId;
 use redis::RedisError;
@@ -243,6 +247,21 @@ pub fn get_stream_key(
     stream_key
 }
 
+/// Returns a Redis stream key from a complete tenant namespace.
+#[must_use]
+pub fn get_stream_key_for_namespace(
+    namespace: &TenantNamespace,
+    trader_id: TraderId,
+    config: &MessageBusConfig,
+) -> String {
+    format!(
+        "{}:trader-{}:{}",
+        namespace.key_prefix(),
+        encode_namespace_component(trader_id.as_str()),
+        config.streams_prefix
+    )
+}
+
 async fn get_redis_version(conn: &mut redis::aio::ConnectionManager) -> anyhow::Result<SemVer> {
     let info: String = redis::cmd("INFO").query_async(conn).await?;
     let Some(version_str) = info.lines().find_map(|line| {
@@ -260,6 +279,7 @@ async fn get_redis_version(conn: &mut redis::aio::ConnectionManager) -> anyhow::
 
 #[cfg(test)]
 mod tests {
+    use nautilus_common::tenant::TenantId;
     use rstest::rstest;
     use serde_json::json;
 
@@ -286,6 +306,22 @@ mod tests {
         let (url, redacted_url) = get_redis_url(&config);
         assert_eq!(url, "redis://:secretpw@example.com:6380");
         assert_eq!(redacted_url, "redis://:se...pw@example.com:6380");
+    }
+
+    #[rstest]
+    fn test_get_stream_key_with_tenant_namespace() {
+        let tenant_id = TenantId::new("tenant-a").unwrap();
+        let trader_id = TraderId::from("TRADER-001");
+        let account_id = nautilus_model::identifiers::AccountId::from("BINANCE-001");
+        let instance_id = UUID4::from("11111111-1111-4111-8111-111111111111");
+        let config = MessageBusConfig::default();
+
+        let namespace = TenantNamespace::new(tenant_id, account_id, instance_id);
+        let key = get_stream_key_for_namespace(&namespace, trader_id, &config);
+
+        assert!(key.starts_with("nautilus:v1:tenant:tenant-a:account:BINANCE-001:"));
+        assert!(key.contains("runtime:11111111-1111-4111-8111-111111111111"));
+        assert!(key.ends_with(":trader-TRADER-001:stream"));
     }
 
     #[rstest]

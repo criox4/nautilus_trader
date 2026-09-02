@@ -442,6 +442,12 @@ pub fn get_data_cmd_sender() -> Arc<dyn DataCommandSender> {
     })
 }
 
+/// Attempts to get the global data command sender without panicking.
+#[must_use]
+pub fn try_get_data_cmd_sender() -> Option<Arc<dyn DataCommandSender>> {
+    DATA_CMD_SENDER.with(|sender| sender.borrow().as_ref().cloned())
+}
+
 /// Sets the global data command sender.
 ///
 /// This should be called by the runner when it initializes.
@@ -463,6 +469,11 @@ pub fn replace_data_cmd_sender(sender: Arc<dyn DataCommandSender>) {
     DATA_CMD_SENDER.with(|s| {
         *s.borrow_mut() = Some(sender);
     });
+}
+
+/// Restores the data command sender that was active before a scoped runner binding.
+pub fn restore_data_cmd_sender(sender: Option<Arc<dyn DataCommandSender>>) {
+    DATA_CMD_SENDER.with(|s| *s.borrow_mut() = sender);
 }
 
 /// Trait for time event sending that can be implemented for both sync and async runners.
@@ -518,6 +529,11 @@ pub fn replace_time_event_sender(sender: Arc<dyn TimeEventSender>) {
     TIME_EVENT_SENDER.with(|s| {
         *s.borrow_mut() = Some(sender);
     });
+}
+
+/// Restores the time event sender that was active before a scoped runner binding.
+pub fn restore_time_event_sender(sender: Option<Arc<dyn TimeEventSender>>) {
+    TIME_EVENT_SENDER.with(|s| *s.borrow_mut() = sender);
 }
 
 /// A deferred trading command and its direct endpoint.
@@ -701,6 +717,11 @@ pub fn replace_exec_cmd_sender(sender: Arc<dyn TradingCommandSender>) {
     EXEC_CMD_SENDER.with(|s| {
         *s.borrow_mut() = Some(sender);
     });
+}
+
+/// Restores the trading command sender that was active before a scoped runner binding.
+pub fn restore_exec_cmd_sender(sender: Option<Arc<dyn TradingCommandSender>>) {
+    EXEC_CMD_SENDER.with(|s| *s.borrow_mut() = sender);
 }
 
 thread_local! {

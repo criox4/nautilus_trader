@@ -252,29 +252,26 @@ impl SyntheticInstrument {
     ) -> Result<Price, SyntheticInstrumentError> {
         let n = self.component_names.len();
         let mut buf = [0.0_f64; MAX_INLINE_COMPONENTS];
+        let resolve_input = |component_name: &String| {
+            inputs.get(component_name).copied().ok_or_else(|| {
+                SyntheticInstrumentError::MissingInput {
+                    component_name: component_name.clone(),
+                }
+            })
+        };
         let input_values: &[f64] = if n <= MAX_INLINE_COMPONENTS {
             for (i, component_name) in self.component_names.iter().enumerate() {
-                buf[i] = *inputs.get(component_name).ok_or_else(|| {
-                    SyntheticInstrumentError::MissingInput {
-                        component_name: component_name.clone(),
-                    }
-                })?;
+                buf[i] = resolve_input(component_name)?;
             }
             &buf[..n]
         } else {
             // Fallback for large component sets
-            let v: Result<Vec<f64>, _> = self
+            let input_values = self
                 .component_names
                 .iter()
-                .map(|name| {
-                    inputs.get(name).copied().ok_or_else(|| {
-                        SyntheticInstrumentError::MissingInput {
-                            component_name: name.clone(),
-                        }
-                    })
-                })
-                .collect();
-            return self.calculate(&v?);
+                .map(resolve_input)
+                .collect::<Result<Vec<_>, _>>()?;
+            return self.calculate(&input_values);
         };
 
         self.calculate(input_values)
@@ -295,11 +292,11 @@ impl SyntheticInstrument {
             });
         }
 
-        for (i, value) in inputs.iter().enumerate() {
+        for (component_name, &value) in self.component_names.iter().zip(inputs) {
             if !value.is_finite() {
                 return Err(SyntheticInstrumentError::NonFiniteInput {
-                    component_name: self.component_names[i].clone(),
-                    value: *value,
+                    component_name: component_name.clone(),
+                    value,
                 });
             }
         }
@@ -650,6 +647,37 @@ mod tests {
             }
             _ => panic!("Expected validation error, received {error:?}"),
         }
+    }
+
+    #[rstest]
+    fn test_serialization_roundtrip_rebuilds_formula() {
+        let components = vec![
+            InstrumentId::from_str("BTC.BINANCE").unwrap(),
+            InstrumentId::from_str("LTC.BINANCE").unwrap(),
+        ];
+        let synth = SyntheticInstrument::builder()
+            .symbol(Symbol::from("BTC-LTC"))
+            .price_precision(3)
+            .components(components.clone())
+            .formula("BTC.BINANCE / LTC.BINANCE")
+            .ts_event(11.into())
+            .ts_init(22.into())
+            .build()
+            .unwrap();
+        let json = serde_json::to_string(&synth).unwrap();
+
+        let deserialized: SyntheticInstrument = serde_json::from_str(&json).unwrap();
+        let price = deserialized.calculate(&[12.5, 2.0]).unwrap();
+
+        assert_eq!(deserialized.id, synth.id);
+        assert_eq!(deserialized.price_precision, 3);
+        assert_eq!(deserialized.price_increment, Price::from("0.001"));
+        assert_eq!(deserialized.components, components);
+        assert_eq!(deserialized.formula, "BTC.BINANCE / LTC.BINANCE");
+        assert_eq!(deserialized.ts_event, UnixNanos::from(11));
+        assert_eq!(deserialized.ts_init, UnixNanos::from(22));
+        assert_eq!(price.as_decimal(), rust_decimal_macros::dec!(6.25));
+        assert_eq!(price.precision, 3);
     }
 
     #[rstest]
